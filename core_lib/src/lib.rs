@@ -26,6 +26,8 @@ pub mod channel;
 mod errors;
 mod hdl;
 mod manager;
+#[cfg(all(feature = "networkmanager", target_os = "linux"))]
+pub mod nm;
 mod utils;
 
 pub use hdl::info::{TransferMetadata, WifiInfo, WifiSecurity};

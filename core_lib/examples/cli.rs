@@ -7,11 +7,15 @@ use tokio::sync::{broadcast, mpsc};
 
 const USAGE: &str = "\
 Usage:
-  cli recv [--port <port>] [--dir <download dir>] [--auto-accept]
+  cli recv [--port <port>] [--dir <download dir>] [--auto-accept] [--import-wifi]
   cli discover
   cli send <ip:port> --file <path>...
   cli send <ip:port> --text <text>
   cli send <ip:port> --url <url>
+  cli nm-wifi    (--features networkmanager) print active Wi-Fi credentials
+  cli nm-watch   (--features networkmanager) print network status changes
+
+--import-wifi saves received Wi-Fi networks to NetworkManager (--features networkmanager)
 
 Logs: RUST_LOG=rqs_lib=debug (default: warn)";
 
@@ -27,6 +31,10 @@ async fn main() -> Result<(), anyhow::Error> {
         Some("recv") => recv(&args[1..]).await,
         Some("discover") => discover().await,
         Some("send") => send(&args[1..]).await,
+        #[cfg(feature = "networkmanager")]
+        Some("nm-wifi") => nm_wifi().await,
+        #[cfg(feature = "networkmanager")]
+        Some("nm-watch") => nm_watch().await,
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);
@@ -61,6 +69,7 @@ async fn recv(args: &[String]) -> Result<(), anyhow::Error> {
     let mut port = None;
     let mut dir = None;
     let mut auto_accept = false;
+    let mut import_wifi = false;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -81,6 +90,7 @@ async fn recv(args: &[String]) -> Result<(), anyhow::Error> {
                 dir = Some(d);
             }
             "--auto-accept" => auto_accept = true,
+            "--import-wifi" => import_wifi = true,
             other => usage_error(&format!("unknown argument: {other}")),
         }
     }
@@ -173,6 +183,9 @@ async fn recv(args: &[String]) -> Result<(), anyhow::Error> {
                                     "  wifi: ssid={:?} security={:?} hidden={} password={:?}",
                                     w.ssid, w.security, w.hidden, w.password
                                 );
+                                if import_wifi {
+                                    import(w).await;
+                                }
                             }
                             if let Some(dest) = &meta.destination {
                                 println!("  saved to: {dest}");
@@ -317,5 +330,53 @@ async fn send(args: &[String]) -> Result<(), anyhow::Error> {
     }
 
     rqs.stop().await;
+    Ok(())
+}
+
+#[cfg(feature = "networkmanager")]
+async fn import(wifi: &rqs_lib::WifiInfo) {
+    let result = async {
+        rqs_lib::nm::NetworkManager::system()
+            .await?
+            .import_wifi(wifi)
+            .await
+    }
+    .await;
+    match result {
+        Ok(path) => println!("  imported to NetworkManager: {}", path.as_str()),
+        Err(e) => println!("  import failed: {e:#}"),
+    }
+}
+
+#[cfg(not(feature = "networkmanager"))]
+async fn import(_wifi: &rqs_lib::WifiInfo) {
+    println!("  import skipped: built without --features networkmanager");
+}
+
+#[cfg(feature = "networkmanager")]
+async fn nm_wifi() -> Result<(), anyhow::Error> {
+    let nm = rqs_lib::nm::NetworkManager::system().await?;
+    println!("{:#?}", nm.status().await?);
+    match nm.active_wifi().await? {
+        Some(w) => println!("{w:#?}"),
+        None => println!("no active Wi-Fi connection"),
+    }
+    Ok(())
+}
+
+#[cfg(feature = "networkmanager")]
+async fn nm_watch() -> Result<(), anyhow::Error> {
+    use futures::StreamExt;
+
+    let nm = rqs_lib::nm::NetworkManager::system().await?;
+    println!("{:?}", nm.status().await?);
+    let changes = nm.changes().await?;
+    futures::pin_mut!(changes);
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            Some(status) = changes.next() => println!("{status:?}"),
+        }
+    }
     Ok(())
 }
