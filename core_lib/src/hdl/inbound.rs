@@ -723,6 +723,12 @@ impl InboundRequest {
                 trace!("Sending keepalive");
                 self.send_keepalive(true).await?;
             }
+            location_nearby_connections::v1_frame::FrameType::BandwidthUpgradeNegotiation
+            | location_nearby_connections::v1_frame::FrameType::BandwidthUpgradeRetry => {
+                if let Some(reply) = super::upgrade_reply(v1_frame) {
+                    self.encrypt_and_send(&reply).await?;
+                }
+            }
             _ => {
                 error!("Unhandled offline frame encrypted: {:?}", offline);
             }
@@ -753,12 +759,7 @@ impl InboundRequest {
             return Err(anyhow!(crate::errors::AppError::NotAnError));
         }
 
-        // CERTIFICATE_INFO and newer types (PROGRESS_UPDATE, BINDINGS) decode as Unknown
-        if matches!(
-            v1_frame.r#type(),
-            sharing_nearby::v1_frame::FrameType::CertificateInfo
-                | sharing_nearby::v1_frame::FrameType::UnknownFrameType
-        ) {
+        if super::is_ignorable_sharing_frame(v1_frame) {
             debug!(
                 "Ignoring sharing frame type {:?} in {:?}",
                 v1_frame.r#type, self.state.state
@@ -795,8 +796,8 @@ impl InboundRequest {
             }
             _ => {
                 info!(
-                    "Unhandled connection state in process_transfer_setup: {:?}",
-                    self.state.state
+                    "Unhandled frame type {:?} in process_transfer_setup state {:?}",
+                    v1_frame.r#type, self.state.state
                 );
             }
         }
@@ -1203,6 +1204,7 @@ impl InboundRequest {
                 offset: Some(0),
                 flags: Some(0),
                 body: Some(frame_data),
+                index: None,
             }),
             payload_header: Some(payload_header.clone()),
             ..Default::default()
@@ -1229,6 +1231,7 @@ impl InboundRequest {
                 offset: Some(body_size as i64),
                 flags: Some(1), // lastChunk
                 body: Some(vec![]),
+                index: None,
             }),
             payload_header: Some(payload_header),
             ..Default::default()

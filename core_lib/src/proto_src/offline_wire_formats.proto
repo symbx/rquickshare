@@ -43,6 +43,11 @@ message V1Frame {
     KEEP_ALIVE = 5;
     DISCONNECTION = 6;
     PAIRED_KEY_ENCRYPTION = 7;
+    AUTHENTICATION_MESSAGE = 8;
+    AUTHENTICATION_RESULT = 9;
+    AUTO_RESUME = 10;
+    AUTO_RECONNECT = 11;
+    BANDWIDTH_UPGRADE_RETRY = 12;
   }
   optional FrameType type = 1;
 
@@ -54,6 +59,7 @@ message V1Frame {
   optional KeepAliveFrame keep_alive = 6;
   optional DisconnectionFrame disconnection = 7;
   optional PairedKeyEncryptionFrame paired_key_encryption = 8;
+  optional BandwidthUpgradeRetryFrame bandwidth_upgrade_retry = 13;
 }
 
 message ConnectionRequestFrame {
@@ -133,6 +139,7 @@ message PayloadTransferFrame {
     UNKNOWN_PACKET_TYPE = 0;
     DATA = 1;
     CONTROL = 2;
+    PAYLOAD_ACK = 3;
   }
 
   message PayloadHeader {
@@ -158,6 +165,7 @@ message PayloadTransferFrame {
     optional int32 flags = 1;
     optional int64 offset = 2;
     optional bytes body = 3;
+    optional int32 index = 4;
   }
 
   // Accompanies CONTROL packets.
@@ -286,6 +294,31 @@ message BandwidthUpgradeNegotiationFrame {
   optional UpgradePathInfo upgrade_path_info = 2;
   optional ClientIntroduction client_introduction = 3;
   optional ClientIntroductionAck client_introduction_ack = 4;
+}
+
+message BandwidthUpgradeRetryFrame {
+  enum Medium {
+    UNKNOWN_MEDIUM = 0;
+    // 1 is reserved.
+    BLUETOOTH = 2;
+    WIFI_HOTSPOT = 3;
+    BLE = 4;
+    WIFI_LAN = 5;
+    WIFI_AWARE = 6;
+    NFC = 7;
+    WIFI_DIRECT = 8;
+    WEB_RTC = 9;
+    BLE_L2CAP = 10;
+    USB = 11;
+    WEB_RTC_NON_CELLULAR = 12;
+    AWDL = 13;
+    WIFI_AWARE_R4 = 14;
+  }
+  // The mediums this device supports upgrading to.
+  repeated Medium supported_medium = 1;
+  // If true, expect the remote endpoint to send back the latest
+  // supported_medium.
+  optional bool is_request = 2;
 }
 
 message KeepAliveFrame {

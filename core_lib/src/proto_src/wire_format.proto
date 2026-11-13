@@ -122,6 +122,8 @@ message V1Frame {
     PAIRED_KEY_RESULT = 4;
     CERTIFICATE_INFO = 5;
     CANCEL = 6;
+    PROGRESS_UPDATE = 7;
+    BINDINGS = 8;
   }
 
   optional FrameType type = 1;
