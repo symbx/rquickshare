@@ -33,7 +33,7 @@ use crate::securemessage::{
     EcP256PublicKey, EncScheme, GenericPublicKey, Header, HeaderAndBody, PublicKeyType,
     SecureMessage, SigScheme,
 };
-use crate::sharing_nearby::{paired_key_result_frame, text_metadata};
+use crate::sharing_nearby::{paired_key_result_frame, text_metadata, WifiCredentials};
 use crate::utils::{
     encode_point, gen_ecdsa_keypair, gen_random, get_download_dir, hkdf_extract_expand,
     stream_read_exact, to_four_digit_string, DeviceType, RemoteDeviceInfo,
@@ -563,9 +563,15 @@ impl InboundRequest {
                                     == payload_id
                             {
                                 info!("Transfer finished");
-                                let end_index =
-                                    buffer.iter().position(|&b| b == 16).unwrap_or(buffer.len());
-                                let payload = std::str::from_utf8(&buffer[..end_index])?.to_owned();
+                                // Wi-Fi password arrives as a WifiCredentials protobuf, text/URL as raw UTF-8
+                                let payload = match self.state.text_payload.as_ref().unwrap() {
+                                    TextPayloadInfo::Wifi(_) => {
+                                        WifiCredentials::decode(buffer.as_slice())?
+                                            .password()
+                                            .to_owned()
+                                    }
+                                    _ => std::str::from_utf8(buffer)?.to_owned(),
+                                };
 
                                 match self.state.text_payload.clone().unwrap() {
                                     TextPayloadInfo::Url(_) => {
@@ -597,7 +603,7 @@ impl InboundRequest {
                                             |e| {
                                                 if let Some(tmd) = e.transfer_metadata.as_mut() {
                                                     tmd.text_payload =
-                                                        Some(format!("{ssid}: {}", payload.trim()));
+                                                        Some(format!("{ssid}: {payload}"));
                                                     tmd.text_type = Some(TextPayloadType::Wifi);
                                                 }
                                             },
