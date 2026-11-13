@@ -17,11 +17,11 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
 use tokio::io::AsyncWriteExt;
-use tokio::net::TcpStream;
 use tokio::sync::broadcast::{Receiver, Sender};
 use ts_rs::TS;
 
 use super::info::{InternalFileInfo, TransferMetadata};
+use super::transport::{BoxedTransport, Transport};
 use super::{InnerState, State, TextPayloadInfo, TextPayloadType};
 use crate::channel::{ChannelAction, ChannelDirection, ChannelMessage};
 use crate::location_nearby_connections::bandwidth_upgrade_negotiation_frame::upgrade_path_info::Medium;
@@ -68,7 +68,7 @@ const TEXT_TITLE_MAX_CHARS: usize = 64;
 #[derive(Debug)]
 pub struct OutboundRequest {
     endpoint_id: [u8; 4],
-    socket: TcpStream,
+    socket: BoxedTransport,
     pub state: InnerState,
     sender: Sender<ChannelMessage>,
     receiver: Receiver<ChannelMessage>,
@@ -78,7 +78,7 @@ pub struct OutboundRequest {
 impl OutboundRequest {
     pub fn new(
         endpoint_id: [u8; 4],
-        socket: TcpStream,
+        socket: impl Transport + 'static,
         id: String,
         sender: Sender<ChannelMessage>,
         payload: OutboundPayload,
@@ -104,7 +104,7 @@ impl OutboundRequest {
 
         Self {
             endpoint_id,
-            socket,
+            socket: Box::new(socket),
             state: InnerState {
                 id,
                 server_seq: 0,
