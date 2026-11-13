@@ -12,7 +12,6 @@ use hdl::MDnsDiscovery;
 use once_cell::sync::Lazy;
 use rand::distr::Alphanumeric;
 use rand::Rng;
-use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -150,8 +149,7 @@ impl RQS {
             },
             device_type: self.device_type.clone(),
         };
-        let tcp_listener =
-            TcpListener::bind(format!("0.0.0.0:{}", self.port_number.unwrap_or(0))).await?;
+        let tcp_listener = manager::bind_listener(u16::try_from(self.port_number.unwrap_or(0))?)?;
         let binded_addr = tcp_listener.local_addr()?;
         info!("TcpListener on: {}", binded_addr);
 

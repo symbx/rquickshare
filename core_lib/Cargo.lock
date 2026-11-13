@@ -1707,6 +1707,7 @@ dependencies = [
  "rand",
  "serde",
  "sha2",
+ "socket2 0.5.8",
  "sys_metrics",
  "tokio",
  "tokio-util",

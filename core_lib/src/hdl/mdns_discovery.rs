@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, SocketAddr};
 
 use mdns_sd::{ServiceDaemon, ServiceEvent};
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,22 @@ pub struct EndpointInfo {
     pub port: Option<String>,
     pub rtype: Option<DeviceType>,
     pub present: Option<bool>,
+}
+
+/// Prefers IPv4; IPv6 only when routable without a scope id (not link-local).
+fn pick_address(addresses: &HashSet<IpAddr>) -> Option<IpAddr> {
+    let usable = addresses.iter().filter(|ip| is_not_self_ip(ip));
+    let mut v6 = None;
+    for ip in usable {
+        match ip {
+            IpAddr::V4(_) => return Some(*ip),
+            IpAddr::V6(v) if !v.is_loopback() && (v.segments()[0] & 0xffc0) != 0xfe80 => {
+                v6.get_or_insert(*ip);
+            }
+            IpAddr::V6(_) => {}
+        }
+    }
+    v6
 }
 
 const SERVICE_TYPE: &str = "_FC9F5ED42C8A._tcp.local.";
@@ -80,20 +97,9 @@ impl MDnsDiscovery {
                                 ServiceEvent::ServiceResolved(info) => {
                                     let port = info.get_port();
 
-                                    let ip_hash = info.get_addresses_v4();
-                                    if ip_hash.is_empty() {
+                                    let Some(ip) = pick_address(info.get_addresses()) else {
                                         continue;
-                                    }
-
-                                    let ip = match ip_hash.iter().next() {
-                                        Some(i) => i,
-                                        None => continue,
                                     };
-
-                                    // Check that the IP is not a "self IP"
-                                    if !is_not_self_ip(ip) {
-                                        continue;
-                                    }
 
                                     // Decode the "n" text properties
                                     let n = match info.get_property("n") {
@@ -107,7 +113,7 @@ impl MDnsDiscovery {
                                         Err(_) => continue
                                     };
 
-                                    let ip_port = format!("{ip}:{port}");
+                                    let ip_port = SocketAddr::new(ip, port).to_string();
                                     let fullname = info.get_fullname().to_string();
                                     if TcpStream::connect(&ip_port).await.is_ok() {
                                         let ei = EndpointInfo {
@@ -149,5 +155,27 @@ impl MDnsDiscovery {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn set(ips: &[&str]) -> HashSet<IpAddr> {
+        ips.iter().map(|s| s.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn prefers_ipv4() {
+        let ips = set(&["2001:db8::5", "192.0.2.7"]);
+        assert_eq!(pick_address(&ips), Some("192.0.2.7".parse().unwrap()));
+    }
+
+    #[test]
+    fn falls_back_to_routable_ipv6() {
+        let ips = set(&["fe80::1", "2001:db8::5"]);
+        assert_eq!(pick_address(&ips), Some("2001:db8::5".parse().unwrap()));
+        assert_eq!(pick_address(&set(&["fe80::1"])), None);
     }
 }

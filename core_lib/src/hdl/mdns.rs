@@ -186,7 +186,7 @@ impl MDnsServer {
             service_port,
             &properties[..],
         )?
-        .enable_addr_auto(AddrType::V4);
+        .enable_addr_auto(AddrType::BOTH);
 
         Ok(si)
     }

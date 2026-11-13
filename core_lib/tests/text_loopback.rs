@@ -4,6 +4,10 @@ use rqs_lib::channel::{ChannelAction, ChannelDirection, ChannelMessage};
 use rqs_lib::{OutboundPayload, SendInfo, State, Visibility, WifiInfo, WifiSecurity, RQS};
 
 async fn transfer(port: u32, ob: OutboundPayload) -> ChannelMessage {
+    transfer_via("127.0.0.1", port, ob).await
+}
+
+async fn transfer_via(host: &str, port: u32, ob: OutboundPayload) -> ChannelMessage {
     let mut receiver = RQS::new(Visibility::Invisible, Some(port), None);
     receiver.run().await.unwrap();
     let mut sender = RQS::new(Visibility::Invisible, None, None);
@@ -16,7 +20,7 @@ async fn transfer(port: u32, ob: OutboundPayload) -> ChannelMessage {
         .send(SendInfo {
             id: "loopback".into(),
             name: "receiver".into(),
-            addr: format!("127.0.0.1:{port}"),
+            addr: format!("{host}:{port}"),
             ob,
         })
         .await
@@ -150,4 +154,14 @@ async fn sender_sees_rejection() {
     sender.stop().await;
     receiver.stop().await;
     assert_eq!(end, State::Rejected);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sends_text_over_ipv6() {
+    if std::net::TcpListener::bind("[::1]:0").is_err() {
+        eprintln!("IPv6 loopback unavailable, skipping");
+        return;
+    }
+    let msg = transfer_via("[::1]", 47917, OutboundPayload::Text("v6".into())).await;
+    assert_eq!(msg.meta.unwrap().text_payload.as_deref(), Some("v6"));
 }

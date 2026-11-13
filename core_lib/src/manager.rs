@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::broadcast::Sender;
 use tokio::sync::mpsc::Receiver;
@@ -67,6 +70,7 @@ impl TcpServer {
                 r = self.tcp_listener.accept() => {
                     match r {
                         Ok((socket, remote_addr)) => {
+                            let remote_addr = SocketAddr::new(remote_addr.ip().to_canonical(), remote_addr.port());
                             trace!("{INNER_NAME}: new client: {remote_addr}");
                             tokio::spawn(run_inbound(socket, remote_addr.to_string(), self.sender.clone()));
                         },
@@ -96,6 +100,29 @@ impl TcpServer {
         )
         .await
     }
+}
+
+/// Dual-stack listener on `[::]` (IPv4 peers arrive v4-mapped); IPv4 only when IPv6 is unavailable.
+pub(crate) fn bind_listener(port: u16) -> std::io::Result<TcpListener> {
+    match bind_dual_stack(port) {
+        Ok(listener) => Ok(listener),
+        Err(e) => {
+            warn!("{INNER_NAME}: IPv6 listener unavailable ({e}), using IPv4 only");
+            let listener = std::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))?;
+            listener.set_nonblocking(true)?;
+            TcpListener::from_std(listener)
+        }
+    }
+}
+
+fn bind_dual_stack(port: u16) -> std::io::Result<TcpListener> {
+    let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+    socket.set_only_v6(false)?;
+    socket.set_reuse_address(true)?;
+    socket.bind(&SocketAddr::from((Ipv6Addr::UNSPECIFIED, port)).into())?;
+    socket.listen(1024)?;
+    socket.set_nonblocking(true)?;
+    TcpListener::from_std(socket.into())
 }
 
 /// Drives an incoming session on an accepted transport until it ends.
