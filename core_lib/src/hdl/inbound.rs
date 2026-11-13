@@ -18,7 +18,7 @@ use tokio::sync::broadcast::{Receiver, Sender};
 use super::transport::{BoxedTransport, Transport};
 use super::{InnerState, State};
 use crate::channel::{ChannelAction, ChannelDirection, ChannelMessage};
-use crate::hdl::info::{InternalFileInfo, TransferMetadata};
+use crate::hdl::info::{InternalFileInfo, TransferMetadata, WifiInfo};
 use crate::hdl::{TextPayloadInfo, TextPayloadType};
 use crate::location_nearby_connections::payload_transfer_frame::{
     payload_header, PacketType, PayloadChunk, PayloadHeader,
@@ -586,11 +586,12 @@ impl InboundRequest {
                             {
                                 info!("Transfer finished");
                                 // Wi-Fi password arrives as a WifiCredentials protobuf, text/URL as raw UTF-8
+                                let mut hidden = false;
                                 let payload = match self.state.text_payload.as_ref().unwrap() {
                                     TextPayloadInfo::Wifi(_) => {
-                                        WifiCredentials::decode(buffer.as_slice())?
-                                            .password()
-                                            .to_owned()
+                                        let creds = WifiCredentials::decode(buffer.as_slice())?;
+                                        hidden = creds.hidden_ssid();
+                                        creds.password().to_owned()
                                     }
                                     _ => std::str::from_utf8(buffer)?.to_owned(),
                                 };
@@ -627,6 +628,10 @@ impl InboundRequest {
                                                     tmd.text_payload =
                                                         Some(format!("{ssid}: {payload}"));
                                                     tmd.text_type = Some(TextPayloadType::Wifi);
+                                                    if let Some(wifi) = tmd.wifi.as_mut() {
+                                                        wifi.password = Some(payload);
+                                                        wifi.hidden = hidden;
+                                                    }
                                                 }
                                             },
                                             false,
@@ -994,6 +999,11 @@ impl InboundRequest {
                 files: None,
                 pin_code: self.state.pin_code.clone(),
                 text_description: meta.ssid.clone(),
+                wifi: Some(WifiInfo {
+                    ssid: meta.ssid().to_owned(),
+                    security: meta.security_type().into(),
+                    ..Default::default()
+                }),
                 ..Default::default()
             };
 

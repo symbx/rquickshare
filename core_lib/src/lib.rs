@@ -28,6 +28,7 @@ mod hdl;
 mod manager;
 mod utils;
 
+pub use hdl::info::{TransferMetadata, WifiInfo, WifiSecurity};
 pub use hdl::{EndpointInfo, OutboundPayload, State, TextPayloadType, Visibility};
 pub use manager::SendInfo;
 pub use utils::DeviceType;

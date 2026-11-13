@@ -168,6 +168,12 @@ async fn recv(args: &[String]) -> Result<(), anyhow::Error> {
                             if let Some(t) = &meta.text_type {
                                 println!("  {t:?}: {}", meta.text_payload.as_deref().unwrap_or(""));
                             }
+                            if let Some(w) = &meta.wifi {
+                                println!(
+                                    "  wifi: ssid={:?} security={:?} hidden={} password={:?}",
+                                    w.ssid, w.security, w.hidden, w.password
+                                );
+                            }
                             if let Some(dest) = &meta.destination {
                                 println!("  saved to: {dest}");
                             }
