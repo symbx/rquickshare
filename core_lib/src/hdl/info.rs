@@ -57,6 +57,17 @@ impl From<SecurityType> for WifiSecurity {
     }
 }
 
+impl From<&WifiSecurity> for SecurityType {
+    fn from(value: &WifiSecurity) -> Self {
+        match value {
+            WifiSecurity::Unknown => Self::UnknownSecurityType,
+            WifiSecurity::Open => Self::Open,
+            WifiSecurity::WpaPsk => Self::WpaPsk,
+            WifiSecurity::Wep => Self::Wep,
+        }
+    }
+}
+
 /// Shared Wi-Fi network; `password` and `hidden` are known once the credentials payload arrived.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize, TS)]
 #[ts(export)]
@@ -65,4 +76,17 @@ pub struct WifiInfo {
     pub security: WifiSecurity,
     pub password: Option<String>,
     pub hidden: bool,
+}
+
+impl WifiInfo {
+    /// Security type with `Unknown` resolved from the password (empty → open, else WPA-PSK).
+    pub fn effective_security(&self) -> WifiSecurity {
+        match &self.security {
+            WifiSecurity::Unknown if self.password.as_deref().unwrap_or_default().is_empty() => {
+                WifiSecurity::Open
+            }
+            WifiSecurity::Unknown => WifiSecurity::WpaPsk,
+            other => other.clone(),
+        }
+    }
 }

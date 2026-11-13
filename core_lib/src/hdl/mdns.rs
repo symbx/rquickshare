@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use mdns_sd::{AddrType, ServiceDaemon, ServiceInfo};
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::broadcast::Receiver;
 use tokio::sync::watch;
 use tokio::time::{interval_at, Instant};
@@ -38,6 +39,7 @@ pub struct MDnsServer {
     daemon: ServiceDaemon,
     service_info: ServiceInfo,
     ble_receiver: Receiver<()>,
+    network_receiver: Receiver<()>,
     visibility_sender: Arc<Mutex<watch::Sender<Visibility>>>,
     visibility_receiver: watch::Receiver<Visibility>,
 }
@@ -47,6 +49,7 @@ impl MDnsServer {
         endpoint_id: [u8; 4],
         service_port: u16,
         ble_receiver: Receiver<()>,
+        network_receiver: Receiver<()>,
         visibility_sender: Arc<Mutex<watch::Sender<Visibility>>>,
         visibility_receiver: watch::Receiver<Visibility>,
     ) -> Result<Self, anyhow::Error> {
@@ -56,6 +59,7 @@ impl MDnsServer {
             daemon: ServiceDaemon::new()?,
             service_info,
             ble_receiver,
+            network_receiver,
             visibility_sender,
             visibility_receiver,
         })
@@ -63,8 +67,7 @@ impl MDnsServer {
 
     pub async fn run(&mut self, ctk: CancellationToken) -> Result<(), anyhow::Error> {
         info!("{INNER_NAME}: service starting");
-        let monitor = self.daemon.monitor()?;
-        let ble_receiver = &mut self.ble_receiver;
+        let mut monitor = self.daemon.monitor()?;
         let mut visibility = *self.visibility_receiver.borrow();
         let mut interval = interval_at(Instant::now() + TICK_INTERVAL, TICK_INTERVAL);
 
@@ -94,7 +97,7 @@ impl MDnsServer {
                         interval.reset();
                     }
                 }
-                _ = ble_receiver.recv() => {
+                _ = self.ble_receiver.recv() => {
                     if visibility == Visibility::Invisible {
                         continue;
                     }
@@ -109,6 +112,14 @@ impl MDnsServer {
                         self.daemon.register(self.service_info.clone())?;
                     }
                 },
+                r = self.network_receiver.recv() => {
+                    if let Err(RecvError::Closed) = r {
+                        continue;
+                    }
+                    info!("{INNER_NAME}: network changed, restarting mDNS daemon");
+                    self.restart_daemon(visibility != Visibility::Invisible).await?;
+                    monitor = self.daemon.monitor()?;
+                }
                 _ = interval.tick() => {
                     if visibility != Visibility::Temporarily {
                         continue;
@@ -127,6 +138,20 @@ impl MDnsServer {
             info!("MDnsServer: service unregistered: {:?}", &event);
         }
 
+        Ok(())
+    }
+
+    /// New daemon binds the current interfaces at once; the old one rescans only every 30s.
+    async fn restart_daemon(&mut self, registered: bool) -> Result<(), anyhow::Error> {
+        if registered {
+            let receiver = self.daemon.unregister(self.service_info.get_fullname())?;
+            let _ = receiver.recv_async().await;
+        }
+        let _ = self.daemon.shutdown();
+        self.daemon = ServiceDaemon::new()?;
+        if registered {
+            self.daemon.register(self.service_info.clone())?;
+        }
         Ok(())
     }
 

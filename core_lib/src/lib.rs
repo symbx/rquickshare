@@ -68,6 +68,8 @@ pub struct RQS {
     // Only used to send the info "a nearby device is sharing"
     ble_sender: broadcast::Sender<()>,
 
+    network_sender: broadcast::Sender<()>,
+
     port_number: Option<u32>,
 
     pub message_sender: broadcast::Sender<ChannelMessage>,
@@ -90,6 +92,7 @@ impl RQS {
 
         let (message_sender, _) = broadcast::channel(50);
         let (ble_sender, _) = broadcast::channel(5);
+        let (network_sender, _) = broadcast::channel(5);
 
         // Define default visibility as per the args inside the new()
         let (visibility_sender, visibility_receiver) = watch::channel(Visibility::Invisible);
@@ -102,6 +105,7 @@ impl RQS {
             visibility_sender: Arc::new(Mutex::new(visibility_sender)),
             visibility_receiver,
             ble_sender,
+            network_sender,
             port_number,
             message_sender,
         }
@@ -151,11 +155,19 @@ impl RQS {
             endpoint_id[..4].try_into()?,
             binded_addr.port(),
             self.ble_sender.subscribe(),
+            self.network_sender.subscribe(),
             self.visibility_sender.clone(),
             self.visibility_receiver.clone(),
         )?;
         let ctk = ctoken.clone();
         tracker.spawn(async move { mdns.run(ctk).await });
+
+        #[cfg(all(feature = "networkmanager", target_os = "linux"))]
+        {
+            let ctk = ctoken.clone();
+            let network_sender = self.network_sender.clone();
+            tracker.spawn(async move { nm::forward_network_changes(network_sender, ctk).await });
+        }
 
         tracker.close();
 
@@ -203,6 +215,11 @@ impl RQS {
             discovert_ctk.cancel();
             self.discovery_ctk = None;
         }
+    }
+
+    /// Re-announces the mDNS service on the current interfaces; call after a network change.
+    pub fn network_changed(&self) {
+        let _ = self.network_sender.send(());
     }
 
     pub fn change_visibility(&mut self, nv: Visibility) {

@@ -12,6 +12,7 @@ Usage:
   cli send <ip:port> --file <path>...
   cli send <ip:port> --text <text>
   cli send <ip:port> --url <url>
+  cli send <ip:port> --wifi [<ssid> [<password>]]   (no ssid: active Wi-Fi, --features networkmanager)
   cli nm-wifi    (--features networkmanager) print active Wi-Fi credentials
   cli nm-watch   (--features networkmanager) print network status changes
 
@@ -264,7 +265,21 @@ async fn send(args: &[String]) -> Result<(), anyhow::Error> {
         }
         Some("--text") if args.len() == 3 => OutboundPayload::Text(args[2].clone()),
         Some("--url") if args.len() == 3 => OutboundPayload::Url(args[2].clone()),
-        _ => usage_error("expected --file <path>..., --text <text> or --url <url>"),
+        Some("--wifi") if args.len() == 2 => OutboundPayload::Wifi(active_wifi().await?),
+        Some("--wifi") if args.len() <= 4 => {
+            let password = args.get(3).cloned();
+            OutboundPayload::Wifi(rqs_lib::WifiInfo {
+                ssid: args[2].clone(),
+                security: if password.is_some() {
+                    rqs_lib::WifiSecurity::WpaPsk
+                } else {
+                    rqs_lib::WifiSecurity::Open
+                },
+                password,
+                hidden: false,
+            })
+        }
+        _ => usage_error("expected --file <path>..., --text <text>, --url <url> or --wifi"),
     };
 
     let mut rqs = RQS::new(Visibility::Invisible, None, None);
@@ -379,4 +394,18 @@ async fn nm_watch() -> Result<(), anyhow::Error> {
         }
     }
     Ok(())
+}
+
+#[cfg(feature = "networkmanager")]
+async fn active_wifi() -> Result<rqs_lib::WifiInfo, anyhow::Error> {
+    rqs_lib::nm::NetworkManager::system()
+        .await?
+        .active_wifi()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("no active Wi-Fi connection"))
+}
+
+#[cfg(not(feature = "networkmanager"))]
+async fn active_wifi() -> Result<rqs_lib::WifiInfo, anyhow::Error> {
+    usage_error("--wifi without <ssid> needs --features networkmanager")
 }

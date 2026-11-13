@@ -224,6 +224,51 @@ impl NetworkManager {
     }
 }
 
+const SETTLE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Signals `sender` once NetworkManager settles on a connected state after a change.
+pub(crate) async fn forward_network_changes(
+    sender: tokio::sync::broadcast::Sender<()>,
+    ctk: tokio_util::sync::CancellationToken,
+) {
+    let changes = match NetworkManager::system().await {
+        Ok(nm) => nm.changes().await,
+        Err(e) => Err(e),
+    };
+    let changes = match changes {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("NetworkManager unavailable, network changes not tracked: {e}");
+            return;
+        }
+    };
+    futures::pin_mut!(changes);
+
+    loop {
+        let mut last = tokio::select! {
+            _ = ctk.cancelled() => return,
+            s = changes.next() => match s {
+                Some(s) => s,
+                None => return,
+            },
+        };
+        loop {
+            tokio::select! {
+                _ = ctk.cancelled() => return,
+                s = tokio::time::timeout(SETTLE, changes.next()) => match s {
+                    Ok(Some(s)) => last = s,
+                    Ok(None) => return,
+                    Err(_) => break,
+                },
+            }
+        }
+        debug!("Network status: {last:?}");
+        if last.connected {
+            let _ = sender.send(());
+        }
+    }
+}
+
 fn owned<'a>(value: impl Into<Value<'a>>) -> Result<OwnedValue> {
     Ok(OwnedValue::try_from(value.into())?)
 }
@@ -278,12 +323,7 @@ fn apply_wifi(settings: &mut ConnectionSettings, wifi: &WifiInfo) -> Result<()> 
     settings.remove("802-1x");
 
     let password = wifi.password.as_deref().unwrap_or_default();
-    let security = match &wifi.security {
-        WifiSecurity::Unknown if password.is_empty() => WifiSecurity::Open,
-        WifiSecurity::Unknown => WifiSecurity::WpaPsk,
-        other => other.clone(),
-    };
-    let security_setting = match security {
+    let security_setting = match wifi.effective_security() {
         WifiSecurity::Open => return Ok(()),
         WifiSecurity::WpaPsk => HashMap::from([
             ("key-mgmt".into(), owned("wpa-psk")?),

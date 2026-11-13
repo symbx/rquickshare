@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use rqs_lib::channel::{ChannelAction, ChannelDirection, ChannelMessage};
-use rqs_lib::{OutboundPayload, SendInfo, State, Visibility, RQS};
+use rqs_lib::{OutboundPayload, SendInfo, State, Visibility, WifiInfo, WifiSecurity, RQS};
 
 async fn transfer(port: u32, ob: OutboundPayload) -> ChannelMessage {
     let mut receiver = RQS::new(Visibility::Invisible, Some(port), None);
@@ -74,4 +74,21 @@ async fn sends_url() {
         Some(rqs_lib::TextPayloadType::Url)
     ));
     assert_eq!(meta.text_payload.as_deref(), Some(url));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sends_wifi() {
+    let wifi = WifiInfo {
+        ssid: "Home Net".into(),
+        security: WifiSecurity::WpaPsk,
+        password: Some("correct horse battery".into()),
+        hidden: true,
+    };
+    let msg = transfer(47915, OutboundPayload::Wifi(wifi.clone())).await;
+    let meta = msg.meta.unwrap();
+    assert!(matches!(
+        meta.text_type,
+        Some(rqs_lib::TextPayloadType::Wifi)
+    ));
+    assert_eq!(meta.wifi, Some(wifi));
 }

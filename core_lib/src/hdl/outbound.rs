@@ -20,7 +20,7 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::broadcast::{Receiver, Sender};
 use ts_rs::TS;
 
-use super::info::{InternalFileInfo, TransferMetadata};
+use super::info::{InternalFileInfo, TransferMetadata, WifiInfo};
 use super::transport::{BoxedTransport, Transport};
 use super::{InnerState, State, TextPayloadInfo, TextPayloadType};
 use crate::channel::{ChannelAction, ChannelDirection, ChannelMessage};
@@ -42,7 +42,7 @@ use crate::securemessage::{
 };
 use crate::sharing_nearby::{
     file_metadata, paired_key_result_frame, text_metadata, FileMetadata, IntroductionFrame,
-    TextMetadata,
+    TextMetadata, WifiCredentials, WifiCredentialsMetadata,
 };
 use crate::utils::{
     encode_point, gen_ecdsa_keypair, gen_random, hkdf_extract_expand, stream_read_exact,
@@ -61,6 +61,22 @@ pub enum OutboundPayload {
     Files(Vec<String>),
     Text(String),
     Url(String),
+    Wifi(WifiInfo),
+}
+
+impl OutboundPayload {
+    /// Body of the single BYTES payload; empty for files.
+    fn bytes_body(&self) -> Vec<u8> {
+        match self {
+            OutboundPayload::Text(t) | OutboundPayload::Url(t) => t.as_bytes().to_vec(),
+            OutboundPayload::Wifi(wifi) => WifiCredentials {
+                password: wifi.password.clone(),
+                hidden_ssid: Some(wifi.hidden),
+            }
+            .encode_to_vec(),
+            OutboundPayload::Files(_) => vec![],
+        }
+    }
 }
 
 const TEXT_TITLE_MAX_CHARS: usize = 64;
@@ -99,6 +115,11 @@ impl OutboundRequest {
             OutboundPayload::Url(url) => {
                 metadata.text_type = Some(TextPayloadType::Url);
                 metadata.text_payload = Some(url.to_owned());
+            }
+            OutboundPayload::Wifi(wifi) => {
+                metadata.text_type = Some(TextPayloadType::Wifi);
+                metadata.text_description = Some(wifi.ssid.clone());
+                metadata.wifi = Some(wifi.clone());
             }
         }
 
@@ -674,6 +695,7 @@ impl OutboundRequest {
         let mut transferred_files: HashMap<i64, InternalFileInfo> = HashMap::new();
         let mut text_metadata: Vec<TextMetadata> = vec![];
         let mut text_payload: Option<TextPayloadInfo> = None;
+        let mut wifi_credentials_metadata: Vec<WifiCredentialsMetadata> = vec![];
         let mut total_to_send = 0;
         match &self.payload {
             OutboundPayload::Text(text) | OutboundPayload::Url(text) => {
@@ -694,6 +716,19 @@ impl OutboundRequest {
                 });
                 text_payload = Some(info);
                 total_to_send = text.len() as u64;
+            }
+            OutboundPayload::Wifi(wifi) => {
+                let payload_id = rand::rng().random::<i64>();
+                let security: sharing_nearby::wifi_credentials_metadata::SecurityType =
+                    (&wifi.effective_security()).into();
+                wifi_credentials_metadata.push(WifiCredentialsMetadata {
+                    ssid: Some(wifi.ssid.clone()),
+                    security_type: Some(security.into()),
+                    payload_id: Some(payload_id),
+                    ..Default::default()
+                });
+                text_payload = Some(TextPayloadInfo::Wifi((payload_id, wifi.ssid.clone())));
+                total_to_send = self.payload.bytes_body().len() as u64;
             }
             OutboundPayload::Files(files) => {
                 for f in files {
@@ -781,6 +816,7 @@ impl OutboundRequest {
                 introduction: Some(IntroductionFrame {
                     file_metadata,
                     text_metadata,
+                    wifi_credentials_metadata,
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -814,10 +850,7 @@ impl OutboundRequest {
                 .await;
 
                 if let Some(info) = self.state.text_payload.clone() {
-                    let body = match &self.payload {
-                        OutboundPayload::Text(t) | OutboundPayload::Url(t) => t.as_bytes().to_vec(),
-                        OutboundPayload::Files(_) => vec![],
-                    };
+                    let body = self.payload.bytes_body();
                     let sent = body.len() as u64;
                     self.send_bytes_payload(info.get_i64_value(), body).await?;
                     self.update_state(
