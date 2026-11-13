@@ -510,21 +510,39 @@ impl InboundRequest {
                 let payload_transfer = v1_frame
                     .payload_transfer
                     .as_ref()
-                    .ok_or_else(|| anyhow!("Missing required fields"))?;
+                    .ok_or_else(|| anyhow!("Missing payload_transfer"))?;
+
+                // CONTROL and PAYLOAD_ACK packets carry no chunk
+                if payload_transfer.packet_type() != PacketType::Data {
+                    debug!(
+                        "Ignoring payload packet: type={:?} header={:?} control={:?}",
+                        payload_transfer.packet_type,
+                        payload_transfer.payload_header,
+                        payload_transfer.control_message
+                    );
+                    return Ok(());
+                }
 
                 let header = payload_transfer
                     .payload_header
                     .as_ref()
-                    .ok_or_else(|| anyhow!("Missing required fields"))?;
+                    .ok_or_else(|| anyhow!("Missing payload_header"))?;
                 let chunk = payload_transfer
                     .payload_chunk
                     .as_ref()
-                    .ok_or_else(|| anyhow!("Missing required fields"))?;
+                    .ok_or_else(|| anyhow!("Missing payload_chunk"))?;
 
                 match header.r#type() {
                     payload_header::PayloadType::Bytes => {
                         info!("Processing PayloadType::Bytes");
                         let payload_id = header.id();
+                        debug!(
+                            "Bytes chunk: id={payload_id} total={} offset={} len={} flags={}",
+                            header.total_size(),
+                            chunk.offset(),
+                            chunk.body.as_ref().map_or(0, |b| b.len()),
+                            chunk.flags()
+                        );
 
                         if header.total_size() > SANE_FRAME_LENGTH.into() {
                             self.state.payload_buffers.remove(&payload_id);
@@ -735,6 +753,19 @@ impl InboundRequest {
             return Err(anyhow!(crate::errors::AppError::NotAnError));
         }
 
+        // CERTIFICATE_INFO and newer types (PROGRESS_UPDATE, BINDINGS) decode as Unknown
+        if matches!(
+            v1_frame.r#type(),
+            sharing_nearby::v1_frame::FrameType::CertificateInfo
+                | sharing_nearby::v1_frame::FrameType::UnknownFrameType
+        ) {
+            debug!(
+                "Ignoring sharing frame type {:?} in {:?}",
+                v1_frame.r#type, self.state.state
+            );
+            return Ok(());
+        }
+
         match self.state.state {
             State::SentConnectionResponse => {
                 debug!("Processing State::SentConnectionResponse");
@@ -815,7 +846,7 @@ impl InboundRequest {
         let introduction = v1_frame
             .introduction
             .as_ref()
-            .ok_or_else(|| anyhow!("Missing required fields"))?;
+            .ok_or_else(|| anyhow!("Missing introduction (frame type {:?})", v1_frame.r#type))?;
 
         // No need to inform the channel here, we'll do it anyway with files info
         self.update_state(
