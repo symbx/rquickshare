@@ -21,6 +21,7 @@ use tokio_util::task::TaskTracker;
 use crate::hdl::BleListener;
 use crate::hdl::MDnsServer;
 use crate::manager::TcpServer;
+use crate::utils::RemoteDeviceInfo;
 
 pub mod channel;
 mod errors;
@@ -51,6 +52,19 @@ pub mod location_nearby_connections {
     include!(concat!(env!("OUT_DIR"), "/location.nearby.connections.rs"));
 }
 
+const MAX_DEVICE_NAME_BYTES: usize = 255;
+
+fn truncate_utf8(mut s: String, max: usize) -> String {
+    if s.len() > max {
+        let mut end = max;
+        while !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s.truncate(end);
+    }
+    s
+}
+
 static CUSTOM_DOWNLOAD: Lazy<RwLock<Option<PathBuf>>> = Lazy::new(|| RwLock::new(None));
 
 #[derive(Debug)]
@@ -69,6 +83,9 @@ pub struct RQS {
     ble_sender: broadcast::Sender<()>,
 
     network_sender: broadcast::Sender<()>,
+
+    device_name: Option<String>,
+    device_type: DeviceType,
 
     port_number: Option<u32>,
 
@@ -106,6 +123,8 @@ impl RQS {
             visibility_receiver,
             ble_sender,
             network_sender,
+            device_name: None,
+            device_type: DeviceType::Laptop,
             port_number,
             message_sender,
         }
@@ -124,6 +143,13 @@ impl RQS {
             .take(4)
             .map(u8::from)
             .collect();
+        let local_device = RemoteDeviceInfo {
+            name: match &self.device_name {
+                Some(n) => n.clone(),
+                None => sys_metrics::host::get_hostname()?,
+            },
+            device_type: self.device_type.clone(),
+        };
         let tcp_listener =
             TcpListener::bind(format!("0.0.0.0:{}", self.port_number.unwrap_or(0))).await?;
         let binded_addr = tcp_listener.local_addr()?;
@@ -134,6 +160,7 @@ impl RQS {
         // Start TcpServer in own "task"
         let mut server = TcpServer::new(
             endpoint_id[..4].try_into()?,
+            local_device.clone(),
             tcp_listener,
             self.message_sender.clone(),
             send_channel.1,
@@ -154,6 +181,7 @@ impl RQS {
         let mut mdns = MDnsServer::new(
             endpoint_id[..4].try_into()?,
             binded_addr.port(),
+            &local_device,
             self.ble_sender.subscribe(),
             self.network_sender.subscribe(),
             self.visibility_sender.clone(),
@@ -204,7 +232,7 @@ impl RQS {
             });
         }
 
-        let discovery = MDnsDiscovery::new(sender)?;
+        let discovery = MDnsDiscovery::new(sender, self.network_sender.subscribe())?;
         tracker.spawn(async move { discovery.run(ctk.clone()).await });
 
         Ok(())
@@ -215,6 +243,12 @@ impl RQS {
             discovert_ctk.cancel();
             self.discovery_ctk = None;
         }
+    }
+
+    /// Name and type announced to peers (default: hostname, laptop); applies on the next `run`.
+    pub fn set_device(&mut self, name: Option<String>, device_type: DeviceType) {
+        self.device_name = name.map(|n| truncate_utf8(n, MAX_DEVICE_NAME_BYTES));
+        self.device_type = device_type;
     }
 
     /// Re-announces the mDNS service on the current interfaces; call after a network change.

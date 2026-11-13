@@ -738,6 +738,22 @@ impl InboundRequest {
                     self.encrypt_and_send(&reply).await?;
                 }
             }
+            location_nearby_connections::v1_frame::FrameType::Disconnection => {
+                info!("Peer closed the connection in state {:?}", self.state.state);
+                if !matches!(
+                    self.state.state,
+                    State::Finished | State::Rejected | State::Cancelled
+                ) {
+                    self.update_state(
+                        |e| {
+                            e.state = State::Disconnected;
+                        },
+                        true,
+                    )
+                    .await;
+                }
+                return Err(anyhow!(crate::errors::AppError::NotAnError));
+            }
             _ => {
                 error!("Unhandled offline frame encrypted: {:?}", offline);
             }

@@ -46,7 +46,7 @@ use crate::sharing_nearby::{
 };
 use crate::utils::{
     encode_point, gen_ecdsa_keypair, gen_random, hkdf_extract_expand, stream_read_exact,
-    to_four_digit_string, DeviceType, RemoteDeviceInfo,
+    to_four_digit_string, RemoteDeviceInfo,
 };
 use crate::{location_nearby_connections, sharing_nearby};
 
@@ -84,6 +84,7 @@ const TEXT_TITLE_MAX_CHARS: usize = 64;
 #[derive(Debug)]
 pub struct OutboundRequest {
     endpoint_id: [u8; 4],
+    local_device: RemoteDeviceInfo,
     socket: BoxedTransport,
     pub state: InnerState,
     sender: Sender<ChannelMessage>,
@@ -94,6 +95,7 @@ pub struct OutboundRequest {
 impl OutboundRequest {
     pub fn new(
         endpoint_id: [u8; 4],
+        local_device: RemoteDeviceInfo,
         socket: impl Transport + 'static,
         id: String,
         sender: Sender<ChannelMessage>,
@@ -125,6 +127,7 @@ impl OutboundRequest {
 
         Self {
             endpoint_id,
+            local_device,
             socket: Box::new(socket),
             state: InnerState {
                 id,
@@ -262,14 +265,8 @@ impl OutboundRequest {
                 ),
                 connection_request: Some(location_nearby_connections::ConnectionRequestFrame {
                     endpoint_id: Some(String::from_utf8_lossy(&self.endpoint_id).to_string()),
-                    endpoint_name: Some(sys_metrics::host::get_hostname()?.into()),
-                    endpoint_info: Some(
-                        RemoteDeviceInfo {
-                            name: sys_metrics::host::get_hostname()?,
-                            device_type: DeviceType::Laptop,
-                        }
-                        .serialize(),
-                    ),
+                    endpoint_name: Some(self.local_device.name.clone().into()),
+                    endpoint_info: Some(self.local_device.serialize()),
                     mediums: vec![Medium::WifiLan.into()],
                     ..Default::default()
                 }),
@@ -581,6 +578,22 @@ impl OutboundRequest {
                 if let Some(reply) = super::upgrade_reply(v1_frame) {
                     self.encrypt_and_send(&reply).await?;
                 }
+            }
+            location_nearby_connections::v1_frame::FrameType::Disconnection => {
+                info!("Peer closed the connection in state {:?}", self.state.state);
+                if !matches!(
+                    self.state.state,
+                    State::Finished | State::Rejected | State::Cancelled
+                ) {
+                    self.update_state(
+                        |e| {
+                            e.state = State::Disconnected;
+                        },
+                        true,
+                    )
+                    .await;
+                }
+                return Err(anyhow!(crate::errors::AppError::NotAnError));
             }
             _ => {
                 error!("Unhandled offline frame encrypted: {:?}", offline);
@@ -1034,7 +1047,7 @@ impl OutboundRequest {
                 );
                 self.update_state(
                     |e| {
-                        e.state = State::Disconnected;
+                        e.state = State::Rejected;
                     },
                     true,
                 )

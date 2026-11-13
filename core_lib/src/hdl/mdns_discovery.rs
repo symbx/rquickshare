@@ -22,23 +22,32 @@ pub struct EndpointInfo {
     pub present: Option<bool>,
 }
 
+const SERVICE_TYPE: &str = "_FC9F5ED42C8A._tcp.local.";
+
 pub struct MDnsDiscovery {
     daemon: ServiceDaemon,
     sender: broadcast::Sender<EndpointInfo>,
+    network_receiver: broadcast::Receiver<()>,
 }
 
 impl MDnsDiscovery {
-    pub fn new(sender: broadcast::Sender<EndpointInfo>) -> Result<Self, anyhow::Error> {
+    pub fn new(
+        sender: broadcast::Sender<EndpointInfo>,
+        network_receiver: broadcast::Receiver<()>,
+    ) -> Result<Self, anyhow::Error> {
         let daemon = ServiceDaemon::new()?;
 
-        Ok(Self { daemon, sender })
+        Ok(Self {
+            daemon,
+            sender,
+            network_receiver,
+        })
     }
 
-    pub async fn run(self, ctk: CancellationToken) -> Result<(), anyhow::Error> {
+    pub async fn run(mut self, ctk: CancellationToken) -> Result<(), anyhow::Error> {
         info!("MDnsDiscovery: service starting");
 
-        let service_type = "_FC9F5ED42C8A._tcp.local.";
-        let receiver = self.daemon.browse(service_type)?;
+        let mut receiver = self.daemon.browse(SERVICE_TYPE)?;
 
         // Map with fullname as key and EndpointInfo as value
         let mut cache: HashMap<String, EndpointInfo> = HashMap::new();
@@ -48,6 +57,21 @@ impl MDnsDiscovery {
                 _ = ctk.cancelled() => {
                     info!("MDnsDiscovery: tracker cancelled, breaking");
                     break;
+                }
+                r = self.network_receiver.recv() => {
+                    if let Err(broadcast::error::RecvError::Closed) = r {
+                        continue;
+                    }
+                    info!("MDnsDiscovery: network changed, restarting browse");
+                    let _ = self.daemon.shutdown();
+                    self.daemon = ServiceDaemon::new()?;
+                    receiver = self.daemon.browse(SERVICE_TYPE)?;
+                    for (_, ei) in cache.drain() {
+                        let _ = self.sender.send(EndpointInfo {
+                            id: ei.id,
+                            ..Default::default()
+                        });
+                    }
                 }
                 r = receiver.recv_async() => {
                     match r {

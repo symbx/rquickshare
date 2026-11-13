@@ -24,6 +24,7 @@ pub struct SendInfo {
 
 pub struct TcpServer {
     endpoint_id: [u8; 4],
+    local_device: RemoteDeviceInfo,
     tcp_listener: TcpListener,
     sender: Sender<ChannelMessage>,
     connect_receiver: Receiver<SendInfo>,
@@ -32,12 +33,14 @@ pub struct TcpServer {
 impl TcpServer {
     pub fn new(
         endpoint_id: [u8; 4],
+        local_device: RemoteDeviceInfo,
         tcp_listener: TcpListener,
         sender: Sender<ChannelMessage>,
         connect_receiver: Receiver<SendInfo>,
     ) -> Result<Self, anyhow::Error> {
         Ok(Self {
             endpoint_id,
+            local_device,
             tcp_listener,
             sender,
             connect_receiver,
@@ -83,7 +86,15 @@ impl TcpServer {
     pub async fn connect(&self, ctk: CancellationToken, si: SendInfo) -> Result<(), anyhow::Error> {
         debug!("{INNER_NAME}: Connecting to: {}", si.addr);
         let socket = TcpStream::connect(si.addr.clone()).await?;
-        run_outbound(self.endpoint_id, socket, si, self.sender.clone(), ctk).await
+        run_outbound(
+            self.endpoint_id,
+            self.local_device.clone(),
+            socket,
+            si,
+            self.sender.clone(),
+            ctk,
+        )
+        .await
     }
 }
 
@@ -127,6 +138,7 @@ pub(crate) async fn run_inbound(
 /// Drives an outgoing session on a connected transport until it ends or `ctk` is cancelled.
 pub(crate) async fn run_outbound(
     endpoint_id: [u8; 4],
+    local_device: RemoteDeviceInfo,
     socket: impl Transport + 'static,
     si: SendInfo,
     sender: Sender<ChannelMessage>,
@@ -134,6 +146,7 @@ pub(crate) async fn run_outbound(
 ) -> Result<(), anyhow::Error> {
     let mut or = OutboundRequest::new(
         endpoint_id,
+        local_device,
         socket,
         si.id,
         sender.clone(),
@@ -202,6 +215,10 @@ mod tests {
         tokio::spawn(run_inbound(inbound_io, "duplex".into(), recv_tx.clone()));
         tokio::spawn(run_outbound(
             *b"TEST",
+            RemoteDeviceInfo {
+                name: "Duplex Sender".into(),
+                device_type: crate::DeviceType::Tablet,
+            },
             outbound_io,
             SendInfo {
                 id: "duplex".into(),
@@ -213,7 +230,7 @@ mod tests {
             CancellationToken::new(),
         ));
 
-        let payload = tokio::time::timeout(Duration::from_secs(10), async {
+        let meta = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let msg = recv_events.recv().await.unwrap();
                 if msg.direction != ChannelDirection::LibToFront {
@@ -230,7 +247,7 @@ mod tests {
                             })
                             .unwrap();
                     }
-                    Some(State::Finished) => return msg.meta.unwrap().text_payload,
+                    Some(State::Finished) => return msg.meta.unwrap(),
                     _ => {}
                 }
             }
@@ -238,6 +255,9 @@ mod tests {
         .await
         .expect("session over duplex did not finish");
 
-        assert_eq!(payload.as_deref(), Some("over a duplex pipe"));
+        assert_eq!(meta.text_payload.as_deref(), Some("over a duplex pipe"));
+        let source = meta.source.unwrap();
+        assert_eq!(source.name, "Duplex Sender");
+        assert!(matches!(source.device_type, crate::DeviceType::Tablet));
     }
 }

@@ -2,12 +2,12 @@ use std::collections::VecDeque;
 use std::io::BufRead;
 
 use rqs_lib::channel::{ChannelAction, ChannelDirection, ChannelMessage};
-use rqs_lib::{EndpointInfo, OutboundPayload, SendInfo, State, Visibility, RQS};
+use rqs_lib::{DeviceType, EndpointInfo, OutboundPayload, SendInfo, State, Visibility, RQS};
 use tokio::sync::{broadcast, mpsc};
 
 const USAGE: &str = "\
 Usage:
-  cli recv [--port <port>] [--dir <download dir>] [--auto-accept] [--import-wifi]
+  cli recv [--port <port>] [--dir <download dir>] [--name <device name>] [--auto-accept] [--import-wifi]
   cli discover
   cli send <ip:port> --file <path>...
   cli send <ip:port> --text <text>
@@ -71,6 +71,7 @@ async fn recv(args: &[String]) -> Result<(), anyhow::Error> {
     let mut dir = None;
     let mut auto_accept = false;
     let mut import_wifi = false;
+    let mut name = None;
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -90,6 +91,13 @@ async fn recv(args: &[String]) -> Result<(), anyhow::Error> {
                 }
                 dir = Some(d);
             }
+            "--name" => {
+                name = Some(
+                    it.next()
+                        .unwrap_or_else(|| usage_error("--name needs a value"))
+                        .clone(),
+                );
+            }
             "--auto-accept" => auto_accept = true,
             "--import-wifi" => import_wifi = true,
             other => usage_error(&format!("unknown argument: {other}")),
@@ -97,6 +105,7 @@ async fn recv(args: &[String]) -> Result<(), anyhow::Error> {
     }
 
     let mut rqs = RQS::new(Visibility::Visible, port, dir);
+    rqs.set_device(name, DeviceType::Laptop);
     rqs.run().await?;
     let mut events = rqs.message_sender.subscribe();
     let control = rqs.message_sender.clone();
